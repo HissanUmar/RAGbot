@@ -51,6 +51,28 @@ A Retrieval-Augmented Generation (RAG) application using LangChain with local em
 - **Source Attribution**: Returns source documents for generated answers
 - **Configurable**: Adjust chunk size, retrieval count, and other parameters
 
+## ☁️ Google Colab Quick Start
+
+For the **easiest setup**, use the **Google Colab notebook** instead of local installation:
+
+📓 **[RAG_LLM_Colab.ipynb](RAG_LLM_Colab.ipynb)** - Complete RAG pipeline in Google Colab
+
+**Advantages of Colab:**
+- ✅ No local installation required
+- ✅ Pre-configured environment
+- ✅ Free GPU/TPU access
+- ✅ Persistent storage with Google Drive
+- ✅ Automatic logging and result saving
+- ✅ ~5-10 minutes total setup
+
+**To use the Colab notebook:**
+1. Open [RAG_LLM_Colab.ipynb](RAG_LLM_Colab.ipynb)
+2. Click "Open in Colab" 
+3. Add your Hugging Face API key to Secrets (🔑 icon)
+4. Run all cells in order
+
+See [COLAB_NOTEBOOK.md](COLAB_NOTEBOOK.md) for detailed Colab instructions.
+
 ## Requirements
 
 - Python 3.8+
