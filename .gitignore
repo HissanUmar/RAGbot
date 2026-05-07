@@ -63,6 +63,7 @@ logs/
 # Config files with sensitive data
 config.json
 config.local.json
+.streamlit/secrets.toml
 
 # Vector store files
 *.faiss

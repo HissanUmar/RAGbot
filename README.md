@@ -80,6 +80,31 @@ See [COLAB_NOTEBOOK.md](COLAB_NOTEBOOK.md) for detailed Colab instructions.
 - 4GB+ RAM recommended
 - Internet connection for Hugging Face Inference API
 
+## Free Deployment
+
+If you only want to deploy the local embedding model and FAISS retrieval layer for free, use the Streamlit app in [app.py](app.py).
+
+### What this deployment includes
+- Local document chunking and embeddings
+- FAISS vector store creation and loading
+- Retrieval-only question answering by default
+- Optional Hugging Face LLM integration if you later add an API key
+
+### Recommended free host
+- Streamlit Community Cloud
+
+### Run locally
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+### Deployment notes
+1. Push the repo to GitHub.
+2. Connect the repo to Streamlit Community Cloud.
+3. Set the app entry point to `app.py`.
+4. Leave `HUGGINGFACE_API_KEY` unset to keep it retrieval-only and free.
+
 ## Installation
 
 ### 1. Clone the Repository
