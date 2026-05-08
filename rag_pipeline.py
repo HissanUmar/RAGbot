@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from huggingface_hub import InferenceClient
 
 load_dotenv()
 
@@ -49,6 +50,7 @@ class RAGPipeline:
         self.embeddings = None
         self.vector_store = None
         self.llm = None
+        self.llm_init_error = None
         self.qa_chain = None
 
         self._initialize_components()
@@ -91,13 +93,6 @@ class RAGPipeline:
         # persist token back into config so downstream code sees it
         self.config["hf_api_key"] = token
 
-        try:
-            from langchain_community.llms import HuggingFaceHub
-        except Exception as exc:
-            self.llm_init_error = f"langchain_community.llms import failed: {exc}"
-            print(self.llm_init_error)
-            return None
-
         # Candidate models to try (gated list first, then public fallbacks)
         env_list = os.getenv("HF_MODEL_TRY")
         if env_list:
@@ -126,14 +121,7 @@ class RAGPipeline:
                 print(f"Attempting LLM init with model: {repo_id}")
                 os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
                 os.environ["HUGGINGFACE_API_KEY"] = token
-                client = HuggingFaceHub(
-                    repo_id=repo_id,
-                    model_kwargs={
-                        "temperature": self.config["llm_temperature"],
-                        "max_new_tokens": self.config["llm_max_tokens"],
-                    },
-                    huggingfacehub_api_token=token,
-                )
+                client = self._create_hf_llm_client(repo_id, token)
                 print(f"Initialized LLM with {repo_id}")
                 # persist chosen model id
                 self.config["hf_model_id"] = repo_id
@@ -148,6 +136,58 @@ class RAGPipeline:
         self.llm_init_error = combined
         print("LLM initialization failed for all candidates:", combined)
         return None
+
+    def _create_hf_llm_client(self, repo_id: str, token: str):
+        """Create a simple callable wrapper around Hugging Face InferenceClient."""
+        model_id, provider = self._split_provider(repo_id)
+        client = InferenceClient(model=model_id, token=token, provider=provider)
+
+        class _HFLLMWrapper:
+            def __init__(self, inference_client: InferenceClient, model_name: str, temperature: float, max_new_tokens: int):
+                self.client = inference_client
+                self.model_name = model_name
+                self.temperature = temperature
+                self.max_new_tokens = max_new_tokens
+
+            def invoke(self, prompt: str) -> str:
+                # Prefer chat completion for instruction-tuned models.
+                try:
+                    response = self.client.chat_completion(
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=self.max_new_tokens,
+                        temperature=self.temperature,
+                    )
+                    choice = response.choices[0]
+                    message = getattr(choice, "message", None)
+                    if message and getattr(message, "content", None):
+                        return message.content
+                    if getattr(choice, "text", None):
+                        return choice.text
+                except Exception:
+                    pass
+
+                # Fall back to text generation.
+                response = self.client.text_generation(
+                    prompt,
+                    max_new_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    return_full_text=False,
+                )
+                return response if isinstance(response, str) else str(response)
+
+        return _HFLLMWrapper(
+            client,
+            model_id,
+            self.config["llm_temperature"],
+            self.config["llm_max_tokens"],
+        )
+
+    @staticmethod
+    def _split_provider(repo_id: str) -> Tuple[str, Optional[str]]:
+        if ":" in repo_id:
+            model_id, provider = repo_id.rsplit(":", 1)
+            return model_id, provider
+        return repo_id, None
 
     def load_documents(self) -> List[Document]:
         doc_path = Path(self.config["document_path"])
