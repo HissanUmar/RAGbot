@@ -77,27 +77,77 @@ class RAGPipeline:
         self.llm = self._initialize_llm() if self.enable_remote_llm else None
 
     def _initialize_llm(self):
-        if not self.config.get("hf_api_key"):
+        token = (
+            self.config.get("hf_api_key")
+            or os.getenv("HUGGINGFACE_API_KEY")
+            or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+            or os.getenv("HF_TOKEN")
+        )
+        if not token:
+            self.llm_init_error = "HUGGINGFACE_API_KEY is not set"
             print("HF API key not set; running in retrieval-only mode.")
             return None
 
+        # persist token back into config so downstream code sees it
+        self.config["hf_api_key"] = token
+
         try:
             from langchain_community.llms import HuggingFaceHub
-
-            print(f"Initializing LLM: {self.config['hf_model_id']}")
-            os.environ["HUGGINGFACEHUB_API_TOKEN"] = self.config["hf_api_key"]
-            os.environ["HUGGINGFACE_API_KEY"] = self.config["hf_api_key"]
-            return HuggingFaceHub(
-                repo_id=self.config["hf_model_id"],
-                model_kwargs={
-                    "temperature": self.config["llm_temperature"],
-                    "max_new_tokens": self.config["llm_max_tokens"],
-                },
-                huggingfacehub_api_token=self.config["hf_api_key"],
-            )
         except Exception as exc:
-            print(f"LLM initialization failed: {exc}")
+            self.llm_init_error = f"langchain_community.llms import failed: {exc}"
+            print(self.llm_init_error)
             return None
+
+        # Candidate models to try (gated list first, then public fallbacks)
+        env_list = os.getenv("HF_MODEL_TRY")
+        if env_list:
+            candidates = [m.strip() for m in env_list.split(",") if m.strip()]
+        else:
+            candidates = [
+                "deepseek-ai/DeepSeek-V4-Pro:novita",
+                "meta-llama/Llama-3.1-8B-Instruct:cerebras",
+                "Qwen/Qwen3.5-9B:ovhcloud",
+                "Qwen/Qwen2.5-7B-Instruct:together",
+                "meta-llama/Llama-4-Maverick-17B-128E-Instruct:sambanova",
+            ]
+
+        # public fallbacks
+        public_fallbacks = [
+            "google/flan-t5-base",
+            "bigscience/bloom",
+            "gpt2",
+        ]
+
+        candidates.extend(public_fallbacks)
+
+        errors = {}
+        for repo_id in candidates:
+            try:
+                print(f"Attempting LLM init with model: {repo_id}")
+                os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
+                os.environ["HUGGINGFACE_API_KEY"] = token
+                client = HuggingFaceHub(
+                    repo_id=repo_id,
+                    model_kwargs={
+                        "temperature": self.config["llm_temperature"],
+                        "max_new_tokens": self.config["llm_max_tokens"],
+                    },
+                    huggingfacehub_api_token=token,
+                )
+                print(f"Initialized LLM with {repo_id}")
+                # persist chosen model id
+                self.config["hf_model_id"] = repo_id
+                return client
+            except Exception as exc:
+                errors[repo_id] = str(exc)
+                print(f"Model {repo_id} failed: {exc}")
+                continue
+
+        # If we get here, all candidates failed
+        combined = " | ".join([f"{k}: {v}" for k, v in errors.items()])
+        self.llm_init_error = combined
+        print("LLM initialization failed for all candidates:", combined)
+        return None
 
     def load_documents(self) -> List[Document]:
         doc_path = Path(self.config["document_path"])

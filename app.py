@@ -10,6 +10,7 @@ from pathlib import Path
 import os
 
 import streamlit as st
+import requests
 
 from rag_pipeline import RAGPipeline
 
@@ -127,6 +128,20 @@ with st.sidebar:
         st.warning("Add your Hugging Face token to Streamlit Cloud Secrets or environment variables.")
     hf_model_id = resolve_secret_value("HF_MODEL_ID") or os.getenv("HF_MODEL_ID", "google/flan-t5-base")
 
+    # Diagnostic: test HF token access to a list of models
+    def test_hf_models(token: str, candidates: list[str]) -> dict:
+        results = {}
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        for repo_id in candidates:
+            repo = repo_id.split(":", 1)[0]
+            url = f"https://huggingface.co/api/models/{repo}"
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+                results[repo_id] = (resp.status_code, resp.reason)
+            except Exception as exc:
+                results[repo_id] = (None, str(exc))
+        return results
+
     st.divider()
     st.subheader("Upload Documents")
     uploaded_files = st.file_uploader(
@@ -136,6 +151,26 @@ with st.sidebar:
         help="Upload plain text documents to index with FAISS.",
     )
     upload_clicked = st.button("Save uploads")
+
+    # Run diagnostics button
+    if st.button("Run Hugging Face diagnostics"):
+        with st.spinner("Testing Hugging Face token and model access..."):
+            hf_token = resolve_secret_value("HUGGINGFACE_API_KEY") or resolve_secret_value("HUGGINGFACEHUB_API_TOKEN") or resolve_secret_value("HF_TOKEN")
+            candidates = [
+                "deepseek-ai/DeepSeek-V4-Pro:novita",
+                "meta-llama/Llama-3.1-8B-Instruct:cerebras",
+                "Qwen/Qwen3.5-9B:ovhcloud",
+                "Qwen/Qwen2.5-7B-Instruct:together",
+                "meta-llama/Llama-4-Maverick-17B-128E-Instruct:sambanova",
+                "google/flan-t5-base",
+                "bigscience/bloom",
+                "gpt2",
+            ]
+            results = test_hf_models(hf_token, candidates)
+        st.subheader("Hugging Face diagnostics")
+        for repo_id, (code, msg) in results.items():
+            status = f"{code} {msg}" if code else f"Error: {msg}"
+            st.write(f"- **{repo_id}**: {status}")
 
 
 # Ensure demo documents exist before initializing the pipeline so
