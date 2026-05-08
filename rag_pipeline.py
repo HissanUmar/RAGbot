@@ -7,6 +7,7 @@ deployed for free without hosting a model.
 """
 
 import os
+import pickle
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -64,8 +65,10 @@ class RAGPipeline:
             "document_path": os.getenv("DOCUMENT_PATH", "./data/documents"),
             "llm_temperature": float(os.getenv("LLM_TEMPERATURE", 0.7)),
             "llm_max_tokens": int(os.getenv("LLM_MAX_TOKENS", 512)),
-            "hf_model_id": os.getenv("HF_MODEL_ID", "meta-llama/Llama-2-7b-chat-hf"),
-            "hf_api_key": os.getenv("HUGGINGFACE_API_KEY"),
+            "hf_model_id": os.getenv("HF_MODEL_ID", "google/flan-t5-base"),
+            "hf_api_key": os.getenv("HUGGINGFACE_API_KEY")
+            or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+            or os.getenv("HF_TOKEN"),
         }
 
     def _initialize_components(self):
@@ -82,11 +85,13 @@ class RAGPipeline:
             from langchain_community.llms import HuggingFaceHub
 
             print(f"Initializing LLM: {self.config['hf_model_id']}")
+            os.environ["HUGGINGFACEHUB_API_TOKEN"] = self.config["hf_api_key"]
+            os.environ["HUGGINGFACE_API_KEY"] = self.config["hf_api_key"]
             return HuggingFaceHub(
                 repo_id=self.config["hf_model_id"],
                 model_kwargs={
                     "temperature": self.config["llm_temperature"],
-                    "max_length": self.config["llm_max_tokens"],
+                    "max_new_tokens": self.config["llm_max_tokens"],
                 },
                 huggingfacehub_api_token=self.config["hf_api_key"],
             )

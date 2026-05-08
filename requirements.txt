@@ -11,6 +11,7 @@ sentence-transformers>=3.0.1,<4.0.0
 
 # Vector Store
 faiss-cpu>=1.7.4
+scikit-learn>=1.4.0
 
 # Web App
 streamlit>=1.36.0

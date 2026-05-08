@@ -61,9 +61,49 @@ def save_uploaded_documents(uploaded_files, document_dir: Path) -> int:
     return saved_count
 
 
+def resolve_secret_value(name: str) -> str | None:
+    """Resolve a secret from Streamlit secrets or environment variables."""
+    value = os.getenv(name)
+    if value:
+        return value
+
+    try:
+        if name in st.secrets:
+            value = st.secrets[name]
+            if value:
+                return str(value)
+
+        for alternate_name in ("HUGGINGFACEHUB_API_TOKEN", "HF_TOKEN"):
+            if alternate_name in st.secrets:
+                value = st.secrets[alternate_name]
+                if value:
+                    return str(value)
+    except Exception:
+        pass
+
+    return None
+
+
 @st.cache_resource(show_spinner=True)
-def load_pipeline(enable_remote_llm: bool) -> RAGPipeline:
-    pipeline = RAGPipeline(enable_remote_llm=enable_remote_llm)
+def load_pipeline(enable_remote_llm: bool, hf_api_key: str | None, hf_model_id: str) -> RAGPipeline:
+    config = {
+        "chunk_size": int(os.getenv("CHUNK_SIZE", 1000)),
+        "chunk_overlap": int(os.getenv("CHUNK_OVERLAP", 200)),
+        "retrieval_k": int(os.getenv("RETRIEVAL_K", 3)),
+        "embedding_model": os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+        "vector_store_path": os.getenv("VECTOR_STORE_PATH", "./data/vector_store"),
+        "document_path": os.getenv("DOCUMENT_PATH", "./data/documents"),
+        "llm_temperature": float(os.getenv("LLM_TEMPERATURE", 0.7)),
+        "llm_max_tokens": int(os.getenv("LLM_MAX_TOKENS", 512)),
+        "hf_model_id": hf_model_id,
+        "hf_api_key": hf_api_key,
+    }
+
+    if hf_api_key:
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_api_key
+        os.environ["HUGGINGFACE_API_KEY"] = hf_api_key
+
+    pipeline = RAGPipeline(config=config, enable_remote_llm=enable_remote_llm)
     pipeline.setup_pipeline(force_rebuild=False)
     return pipeline
 
@@ -76,15 +116,16 @@ with st.sidebar:
     rebuild = st.button("Rebuild vector store")
 
     # LLM enable toggle — default on when HUGGINGFACE_API_KEY exists
-    hf_key = os.getenv("HUGGINGFACE_API_KEY")
+    hf_key = resolve_secret_value("HUGGINGFACE_API_KEY") or resolve_secret_value("HUGGINGFACEHUB_API_TOKEN") or resolve_secret_value("HF_TOKEN")
     default_enable_llm = bool(hf_key)
     enable_llm = st.checkbox(
         "Enable remote LLM (Hugging Face)",
         value=default_enable_llm,
-        help="Requires HUGGINGFACE_API_KEY set in environment or Colab Secrets",
+        help="Requires a Hugging Face token in Streamlit Cloud Secrets or environment variables",
     )
     if enable_llm and not hf_key:
-        st.warning("HUGGINGFACE_API_KEY not found — set it in Colab Secrets or as an env var.")
+        st.warning("Add your Hugging Face token to Streamlit Cloud Secrets or environment variables.")
+    hf_model_id = resolve_secret_value("HF_MODEL_ID") or os.getenv("HF_MODEL_ID", "google/flan-t5-base")
 
     st.divider()
     st.subheader("Upload Documents")
@@ -104,10 +145,13 @@ document_dir = Path(default_doc_path)
 document_count = ensure_demo_documents(document_dir)
 
 # Use the sidebar toggle to decide whether to enable the remote LLM
-pipeline = load_pipeline(enable_llm)
+pipeline = load_pipeline(enable_llm, hf_key, hf_model_id)
 # Update document_dir to the pipeline's configured path (if different)
 document_dir = Path(pipeline.config["document_path"])
 document_count = ensure_demo_documents(document_dir)
+
+if enable_llm and pipeline.llm is None and getattr(pipeline, "llm_init_error", None):
+    st.warning(f"Remote LLM could not initialize: {pipeline.llm_init_error}")
 
 if upload_clicked:
     if not uploaded_files:
