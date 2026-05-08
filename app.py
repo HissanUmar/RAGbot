@@ -86,7 +86,7 @@ def resolve_secret_value(name: str) -> str | None:
 
 
 @st.cache_resource(show_spinner=True)
-def load_pipeline(enable_remote_llm: bool, hf_api_key: str | None, hf_model_id: str) -> RAGPipeline:
+def load_pipeline(enable_remote_llm: bool, hf_api_key: str | None, hf_model_id: str, llm_max_tokens: int) -> RAGPipeline:
     config = {
         "chunk_size": int(os.getenv("CHUNK_SIZE", 1000)),
         "chunk_overlap": int(os.getenv("CHUNK_OVERLAP", 200)),
@@ -95,7 +95,7 @@ def load_pipeline(enable_remote_llm: bool, hf_api_key: str | None, hf_model_id: 
         "vector_store_path": os.getenv("VECTOR_STORE_PATH", "./data/vector_store"),
         "document_path": os.getenv("DOCUMENT_PATH", "./data/documents"),
         "llm_temperature": float(os.getenv("LLM_TEMPERATURE", 0.7)),
-        "llm_max_tokens": int(os.getenv("LLM_MAX_TOKENS", 512)),
+        "llm_max_tokens": llm_max_tokens,
         "hf_model_id": hf_model_id,
         "hf_api_key": hf_api_key,
     }
@@ -127,6 +127,7 @@ with st.sidebar:
     if enable_llm and not hf_key:
         st.warning("Add your Hugging Face token to Streamlit Cloud Secrets or environment variables.")
     hf_model_id = resolve_secret_value("HF_MODEL_ID") or os.getenv("HF_MODEL_ID", "google/flan-t5-base")
+    llm_max_tokens = st.slider("LLM max tokens", min_value=128, max_value=2048, value=int(os.getenv("LLM_MAX_TOKENS", 1024)), step=64)
 
     # Diagnostic: test HF token access to a list of models
     def test_hf_models(token: str, candidates: list[str]) -> dict:
@@ -180,7 +181,7 @@ document_dir = Path(default_doc_path)
 document_count = ensure_demo_documents(document_dir)
 
 # Use the sidebar toggle to decide whether to enable the remote LLM
-pipeline = load_pipeline(enable_llm, hf_key, hf_model_id)
+pipeline = load_pipeline(enable_llm, hf_key, hf_model_id, llm_max_tokens)
 # Update document_dir to the pipeline's configured path (if different)
 document_dir = Path(pipeline.config["document_path"])
 document_count = ensure_demo_documents(document_dir)
@@ -189,6 +190,9 @@ st.sidebar.divider()
 st.sidebar.subheader("Runtime Status")
 st.sidebar.write(f"Embedding backend: **{pipeline.embedding_backend}**")
 st.sidebar.write(f"Embedding model: `{pipeline.config['embedding_model']}`")
+st.sidebar.write(f"LLM model: `{getattr(pipeline, 'active_llm_model', None) or pipeline.config.get('hf_model_id', 'disabled')}`")
+st.sidebar.write(f"LLM max tokens: `{pipeline.config['llm_max_tokens']}`")
+st.sidebar.write(f"LLM temperature: `{pipeline.config['llm_temperature']}`")
 if getattr(pipeline, "embedding_init_error", None):
     st.sidebar.error(f"Embedding init error: {pipeline.embedding_init_error}")
 

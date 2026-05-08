@@ -54,6 +54,7 @@ class RAGPipeline:
         self.qa_chain = None
         self.embedding_backend = "huggingface"
         self.embedding_init_error = None
+        self.active_llm_model = None
 
         self._initialize_components()
 
@@ -68,7 +69,7 @@ class RAGPipeline:
             "vector_store_path": os.getenv("VECTOR_STORE_PATH", "./data/vector_store"),
             "document_path": os.getenv("DOCUMENT_PATH", "./data/documents"),
             "llm_temperature": float(os.getenv("LLM_TEMPERATURE", 0.7)),
-            "llm_max_tokens": int(os.getenv("LLM_MAX_TOKENS", 512)),
+            "llm_max_tokens": int(os.getenv("LLM_MAX_TOKENS", 1024)),
             "hf_model_id": os.getenv("HF_MODEL_ID", "google/flan-t5-base"),
             "hf_api_key": os.getenv("HUGGINGFACE_API_KEY")
             or os.getenv("HUGGINGFACEHUB_API_TOKEN")
@@ -137,6 +138,7 @@ class RAGPipeline:
                 print(f"Initialized LLM with {repo_id}")
                 # persist chosen model id
                 self.config["hf_model_id"] = repo_id
+                self.active_llm_model = repo_id
                 return client
             except Exception as exc:
                 errors[repo_id] = str(exc)
