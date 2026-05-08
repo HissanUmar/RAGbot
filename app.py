@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import re
 
 import streamlit as st
 import requests
@@ -18,7 +19,7 @@ from rag_pipeline import RAGPipeline
 st.set_page_config(page_title="RAG Retriever", page_icon="🔎", layout="wide")
 
 st.title("RAG Retriever")
-st.caption("Local embeddings + FAISS, deployable for free. LLM is optional.")
+st.caption("Self-hosted local embeddings + FAISS run inside this deployment. LLM is optional.")
 
 
 def ensure_demo_documents(document_dir: Path) -> int:
@@ -85,18 +86,43 @@ def resolve_secret_value(name: str) -> str | None:
     return None
 
 
+def parse_model_options(raw_value: str | None, defaults: list[str]) -> list[str]:
+    """Parse comma/newline-separated model options from config."""
+    if not raw_value:
+        return defaults
+
+    parsed = [entry.strip() for entry in raw_value.replace("\n", ",").split(",") if entry.strip()]
+    return parsed or defaults
+
+
+def model_slug(model_name: str) -> str:
+    """Create a filesystem-safe model slug for vector store names."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", model_name).strip("_")
+
+
 @st.cache_resource(show_spinner=True)
-def load_pipeline(enable_remote_llm: bool, hf_api_key: str | None, hf_model_id: str, llm_max_tokens: int) -> RAGPipeline:
+def load_pipeline(
+    enable_remote_llm: bool,
+    hf_api_key: str | None,
+    hf_model_id: str,
+    embedding_model: str,
+    llm_candidates: tuple[str, ...],
+    llm_max_tokens: int,
+) -> RAGPipeline:
+    base_vector_store_path = os.getenv("VECTOR_STORE_PATH", "./data/vector_store")
+    selected_vector_store_path = str(Path(base_vector_store_path) / model_slug(embedding_model))
+
     config = {
         "chunk_size": int(os.getenv("CHUNK_SIZE", 1000)),
         "chunk_overlap": int(os.getenv("CHUNK_OVERLAP", 200)),
         "retrieval_k": int(os.getenv("RETRIEVAL_K", 3)),
-        "embedding_model": os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
-        "vector_store_path": os.getenv("VECTOR_STORE_PATH", "./data/vector_store"),
+        "embedding_model": embedding_model,
+        "vector_store_path": selected_vector_store_path,
         "document_path": os.getenv("DOCUMENT_PATH", "./data/documents"),
         "llm_temperature": float(os.getenv("LLM_TEMPERATURE", 0.7)),
         "llm_max_tokens": llm_max_tokens,
         "hf_model_id": hf_model_id,
+        "hf_model_candidates": list(llm_candidates),
         "hf_api_key": hf_api_key,
     }
 
@@ -113,12 +139,33 @@ with st.sidebar:
     st.header("Deployment Mode")
     st.write("This app runs the embedding model locally and serves FAISS retrieval.")
     st.info("No Hugging Face model hosting required.")
+    st.caption("Changing the model selectors below reruns the app and reloads the pipeline with the new model choices.")
     top_k = st.slider("Top K results", min_value=1, max_value=8, value=3)
     rebuild = st.button("Rebuild vector store")
 
     # LLM enable toggle — default on when HUGGINGFACE_API_KEY exists
     hf_key = resolve_secret_value("HUGGINGFACE_API_KEY") or resolve_secret_value("HUGGINGFACEHUB_API_TOKEN") or resolve_secret_value("HF_TOKEN")
     default_enable_llm = bool(hf_key)
+
+    default_embedding_model = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    embedding_model_options = parse_model_options(
+        os.getenv("EMBEDDING_MODEL_OPTIONS"),
+        [
+            default_embedding_model,
+            "sentence-transformers/all-MiniLM-L12-v2",
+            "BAAI/bge-small-en-v1.5",
+            "BAAI/bge-base-en-v1.5",
+        ],
+    )
+    embedding_model = st.selectbox(
+        "Embedding model",
+        options=embedding_model_options,
+        index=embedding_model_options.index(default_embedding_model)
+        if default_embedding_model in embedding_model_options
+        else 0,
+        help="Changes retrieval embeddings at runtime. Each embedding model uses its own FAISS index path.",
+    )
+
     enable_llm = st.checkbox(
         "Enable remote LLM (Hugging Face)",
         value=default_enable_llm,
@@ -126,7 +173,25 @@ with st.sidebar:
     )
     if enable_llm and not hf_key:
         st.warning("Add your Hugging Face token to Streamlit Cloud Secrets or environment variables.")
-    hf_model_id = resolve_secret_value("HF_MODEL_ID") or os.getenv("HF_MODEL_ID", "google/flan-t5-base")
+    default_hf_model = resolve_secret_value("HF_MODEL_ID") or os.getenv("HF_MODEL_ID", "google/flan-t5-base")
+    llm_model_options = parse_model_options(
+        os.getenv("HF_MODEL_OPTIONS") or os.getenv("HF_MODEL_TRY"),
+        [
+            default_hf_model,
+            "meta-llama/Llama-3.1-8B-Instruct:cerebras",
+            "Qwen/Qwen2.5-7B-Instruct:together",
+            "google/flan-t5-base",
+            "bigscience/bloom",
+            "gpt2",
+        ],
+    )
+    hf_model_id = st.selectbox(
+        "LLM model",
+        options=llm_model_options,
+        index=llm_model_options.index(default_hf_model) if default_hf_model in llm_model_options else 0,
+        help="Primary Hugging Face model to use at runtime.",
+        disabled=not enable_llm,
+    )
     llm_max_tokens = st.slider("LLM max tokens", min_value=128, max_value=2048, value=int(os.getenv("LLM_MAX_TOKENS", 1024)), step=64)
 
     # Diagnostic: test HF token access to a list of models
@@ -191,6 +256,8 @@ st.sidebar.subheader("Runtime Status")
 st.sidebar.write(f"Embedding backend: **{pipeline.embedding_backend}**")
 st.sidebar.write(f"Embedding model: `{pipeline.config['embedding_model']}`")
 st.sidebar.write(f"LLM model: `{getattr(pipeline, 'active_llm_model', None) or pipeline.config.get('hf_model_id', 'disabled')}`")
+if enable_llm and getattr(pipeline, "active_llm_model", None) and pipeline.active_llm_model != hf_model_id:
+    st.sidebar.caption(f"Selected LLM `{hf_model_id}` was unavailable. Using `{pipeline.active_llm_model}`.")
 st.sidebar.write(f"LLM max tokens: `{pipeline.config['llm_max_tokens']}`")
 st.sidebar.write(f"LLM temperature: `{pipeline.config['llm_temperature']}`")
 if getattr(pipeline, "embedding_init_error", None):

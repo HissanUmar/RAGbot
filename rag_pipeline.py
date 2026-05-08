@@ -52,7 +52,7 @@ class RAGPipeline:
         self.llm = None
         self.llm_init_error = None
         self.qa_chain = None
-        self.embedding_backend = "huggingface"
+        self.embedding_backend = "self-hosted-local"
         self.embedding_init_error = None
         self.active_llm_model = None
 
@@ -80,7 +80,7 @@ class RAGPipeline:
         try:
             print(f"Loading embedding model: {self.config['embedding_model']}")
             self.embeddings = HuggingFaceEmbeddings(model_name=self.config["embedding_model"])
-            self.embedding_backend = "huggingface"
+            self.embedding_backend = "self-hosted-local"
             self.embedding_init_error = None
         except Exception as exc:
             self.embedding_backend = "fallback-error"
@@ -106,27 +106,23 @@ class RAGPipeline:
         # persist token back into config so downstream code sees it
         self.config["hf_api_key"] = token
 
-        # Candidate models to try (gated list first, then public fallbacks)
-        env_list = os.getenv("HF_MODEL_TRY")
-        if env_list:
-            candidates = [m.strip() for m in env_list.split(",") if m.strip()]
-        else:
-            candidates = [
-                "deepseek-ai/DeepSeek-V4-Pro:novita",
-                "meta-llama/Llama-3.1-8B-Instruct:cerebras",
-                "Qwen/Qwen3.5-9B:ovhcloud",
-                "Qwen/Qwen2.5-7B-Instruct:together",
-                "meta-llama/Llama-4-Maverick-17B-128E-Instruct:sambanova",
-            ]
-
-        # public fallbacks
-        public_fallbacks = [
-            "google/flan-t5-base",
-            "bigscience/bloom",
-            "gpt2",
+        requested_model = (self.config.get("hf_model_id") or "").strip()
+        configured_candidates = [
+            model.strip()
+            for model in self.config.get("hf_model_candidates", [])
+            if isinstance(model, str) and model.strip()
         ]
 
-        candidates.extend(public_fallbacks)
+        # Candidate models to try, with the user-selected model first.
+        env_list = os.getenv("HF_MODEL_TRY")
+        env_candidates = [m.strip() for m in env_list.split(",") if m.strip()] if env_list else []
+
+        public_fallbacks = ["google/flan-t5-base", "bigscience/bloom", "gpt2"]
+
+        candidates: list[str] = []
+        for model_id in [requested_model, *configured_candidates, *env_candidates, *public_fallbacks]:
+            if model_id and model_id not in candidates:
+                candidates.append(model_id)
 
         errors = {}
         for repo_id in candidates:
