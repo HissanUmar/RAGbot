@@ -52,6 +52,8 @@ class RAGPipeline:
         self.llm = None
         self.llm_init_error = None
         self.qa_chain = None
+        self.embedding_backend = "huggingface"
+        self.embedding_init_error = None
 
         self._initialize_components()
 
@@ -74,8 +76,18 @@ class RAGPipeline:
         }
 
     def _initialize_components(self):
-        print(f"Loading embedding model: {self.config['embedding_model']}")
-        self.embeddings = HuggingFaceEmbeddings(model_name=self.config["embedding_model"])
+        try:
+            print(f"Loading embedding model: {self.config['embedding_model']}")
+            self.embeddings = HuggingFaceEmbeddings(model_name=self.config["embedding_model"])
+            self.embedding_backend = "huggingface"
+            self.embedding_init_error = None
+        except Exception as exc:
+            self.embedding_backend = "fallback-error"
+            self.embedding_init_error = str(exc)
+            raise RuntimeError(
+                f"Embedding model failed to load: {exc}. "
+                "This deployment is configured to use Hugging Face embeddings only."
+            ) from exc
         self.llm = self._initialize_llm() if self.enable_remote_llm else None
 
     def _initialize_llm(self):

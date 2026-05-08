@@ -185,6 +185,13 @@ pipeline = load_pipeline(enable_llm, hf_key, hf_model_id)
 document_dir = Path(pipeline.config["document_path"])
 document_count = ensure_demo_documents(document_dir)
 
+st.sidebar.divider()
+st.sidebar.subheader("Runtime Status")
+st.sidebar.write(f"Embedding backend: **{pipeline.embedding_backend}**")
+st.sidebar.write(f"Embedding model: `{pipeline.config['embedding_model']}`")
+if getattr(pipeline, "embedding_init_error", None):
+    st.sidebar.error(f"Embedding init error: {pipeline.embedding_init_error}")
+
 if enable_llm and pipeline.llm is None and getattr(pipeline, "llm_init_error", None):
     st.warning(f"Remote LLM could not initialize: {pipeline.llm_init_error}")
 
