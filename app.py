@@ -7,6 +7,7 @@ The Hugging Face LLM is optional and not required for deployment.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import streamlit as st
 
@@ -85,7 +86,14 @@ with st.sidebar:
     upload_clicked = st.button("Save uploads")
 
 
+# Ensure demo documents exist before initializing the pipeline so
+# the vector store can be built on first run.
+default_doc_path = os.getenv("DOCUMENT_PATH", "./data/documents")
+document_dir = Path(default_doc_path)
+document_count = ensure_demo_documents(document_dir)
+
 pipeline = load_pipeline()
+# Update document_dir to the pipeline's configured path (if different)
 document_dir = Path(pipeline.config["document_path"])
 document_count = ensure_demo_documents(document_dir)
 
