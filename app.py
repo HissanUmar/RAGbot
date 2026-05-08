@@ -245,8 +245,15 @@ default_doc_path = os.getenv("DOCUMENT_PATH", "./data/documents")
 document_dir = Path(default_doc_path)
 document_count = ensure_demo_documents(document_dir)
 
-# Use the sidebar toggle to decide whether to enable the remote LLM
-pipeline = load_pipeline(enable_llm, hf_key, hf_model_id, llm_max_tokens)
+# Use the sidebar selections to decide which models to load.
+pipeline = load_pipeline(
+    enable_llm,
+    hf_key,
+    hf_model_id,
+    embedding_model,
+    tuple(llm_model_options),
+    llm_max_tokens,
+)
 # Update document_dir to the pipeline's configured path (if different)
 document_dir = Path(pipeline.config["document_path"])
 document_count = ensure_demo_documents(document_dir)
