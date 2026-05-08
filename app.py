@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import re
+import json
 
 import streamlit as st
 import requests
@@ -107,6 +108,21 @@ SESSION_MEMORY_SUMMARY_LIMIT = int(os.getenv("SESSION_MEMORY_SUMMARY_LIMIT", 240
 
 
 def initialize_session_memory() -> None:
+    persistence_dir = Path(os.getenv("PERSISTENCE_PATH", "./data"))
+    persistence_dir.mkdir(parents=True, exist_ok=True)
+    session_path = persistence_dir / "session_state.json"
+
+    if session_path.exists():
+        try:
+            with session_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            st.session_state["conversation_history"] = data.get("conversation_history", [])
+            st.session_state["conversation_summary"] = data.get("conversation_summary", "")
+            st.session_state["memory_compactions"] = data.get("memory_compactions", 0)
+            return
+        except Exception:
+            pass
+
     st.session_state.setdefault("conversation_history", [])
     st.session_state.setdefault("conversation_summary", "")
     st.session_state.setdefault("memory_compactions", 0)
@@ -185,6 +201,64 @@ def compact_session_memory(pipeline: RAGPipeline) -> None:
     st.session_state["conversation_summary"] = compacted
     st.session_state["conversation_history"] = list(recent_turns)
     st.session_state["memory_compactions"] = st.session_state.get("memory_compactions", 0) + 1
+    # persist session memory
+    persistence_dir = Path(os.getenv("PERSISTENCE_PATH", "./data"))
+    persistence_dir.mkdir(parents=True, exist_ok=True)
+    session_path = persistence_dir / "session_state.json"
+    _save_json_atomic(
+        session_path,
+        {
+            "conversation_history": st.session_state.get("conversation_history", []),
+            "conversation_summary": st.session_state.get("conversation_summary", ""),
+            "memory_compactions": st.session_state.get("memory_compactions", 0),
+        },
+    )
+
+
+def _save_json_atomic(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
+    except Exception:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+
+
+def save_session_state() -> None:
+    persistence_dir = Path(os.getenv("PERSISTENCE_PATH", "./data"))
+    persistence_dir.mkdir(parents=True, exist_ok=True)
+    session_path = persistence_dir / "session_state.json"
+    _save_json_atomic(
+        session_path,
+        {
+            "conversation_history": st.session_state.get("conversation_history", []),
+            "conversation_summary": st.session_state.get("conversation_summary", ""),
+            "memory_compactions": st.session_state.get("memory_compactions", 0),
+        },
+    )
+
+
+def save_ui_state(selected: dict) -> None:
+    persistence_dir = Path(os.getenv("PERSISTENCE_PATH", "./data"))
+    persistence_dir.mkdir(parents=True, exist_ok=True)
+    ui_path = persistence_dir / "ui_state.json"
+    _save_json_atomic(ui_path, selected)
+
+
+def load_ui_state() -> dict:
+    ui_path = Path(os.getenv("PERSISTENCE_PATH", "./data")) / "ui_state.json"
+    if not ui_path.exists():
+        return {}
+    try:
+        with ui_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 @st.cache_resource(show_spinner=True)
@@ -227,7 +301,8 @@ with st.sidebar:
     st.write("This app runs the embedding model locally and serves FAISS retrieval.")
     st.info("No Hugging Face model hosting required.")
     st.caption("Changing the model selectors below reruns the app and reloads the pipeline with the new model choices.")
-    top_k = st.slider("Top K results", min_value=1, max_value=8, value=3)
+    ui_state = load_ui_state()
+    top_k = st.slider("Top K results", min_value=1, max_value=8, value=int(ui_state.get("top_k", 3)))
     rebuild = st.button("Rebuild vector store")
 
     # LLM enable toggle — default on when HUGGINGFACE_API_KEY exists
@@ -244,18 +319,22 @@ with st.sidebar:
             "BAAI/bge-base-en-v1.5",
         ],
     )
+    selected_embedding = ui_state.get("embedding_model", default_embedding_model)
+    embedding_index = (
+        embedding_model_options.index(selected_embedding)
+        if selected_embedding in embedding_model_options
+        else (embedding_model_options.index(default_embedding_model) if default_embedding_model in embedding_model_options else 0)
+    )
     embedding_model = st.selectbox(
         "Embedding model",
         options=embedding_model_options,
-        index=embedding_model_options.index(default_embedding_model)
-        if default_embedding_model in embedding_model_options
-        else 0,
+        index=embedding_index,
         help="Changes retrieval embeddings at runtime. Each embedding model uses its own FAISS index path.",
     )
 
     enable_llm = st.checkbox(
         "Enable remote LLM (Hugging Face)",
-        value=default_enable_llm,
+        value=bool(ui_state.get("enable_llm", default_enable_llm)),
         help="Requires a Hugging Face token in Streamlit Cloud Secrets or environment variables",
     )
     if enable_llm and not hf_key:
@@ -272,14 +351,25 @@ with st.sidebar:
             "gpt2",
         ],
     )
+    selected_hf = ui_state.get("hf_model_id", default_hf_model)
+    hf_index = llm_model_options.index(selected_hf) if selected_hf in llm_model_options else (llm_model_options.index(default_hf_model) if default_hf_model in llm_model_options else 0)
     hf_model_id = st.selectbox(
         "LLM model",
         options=llm_model_options,
-        index=llm_model_options.index(default_hf_model) if default_hf_model in llm_model_options else 0,
+        index=hf_index,
         help="Primary Hugging Face model to use at runtime.",
         disabled=not enable_llm,
     )
-    llm_max_tokens = st.slider("LLM max tokens", min_value=128, max_value=2048, value=int(os.getenv("LLM_MAX_TOKENS", 1024)), step=64)
+    llm_max_tokens = st.slider("LLM max tokens", min_value=128, max_value=2048, value=int(ui_state.get("llm_max_tokens", int(os.getenv("LLM_MAX_TOKENS", 1024)))), step=64)
+
+    # persist UI selections
+    save_ui_state({
+        "top_k": top_k,
+        "embedding_model": embedding_model,
+        "enable_llm": enable_llm,
+        "hf_model_id": hf_model_id,
+        "llm_max_tokens": llm_max_tokens,
+    })
 
     # Diagnostic: test HF token access to a list of models
     def test_hf_models(token: str, candidates: list[str]) -> dict:
@@ -369,6 +459,7 @@ if st.sidebar.button("Clear session memory"):
     st.session_state["conversation_history"] = []
     st.session_state["conversation_summary"] = ""
     st.session_state["memory_compactions"] = 0
+    save_session_state()
     st.rerun()
 
 if enable_llm and pipeline.llm is None and getattr(pipeline, "llm_init_error", None):
@@ -410,12 +501,12 @@ if st.button("Search"):
         conversation_context = build_conversation_context()
         answer, sources = pipeline.query(question.strip(), conversation_context=conversation_context)
 
-        st.session_state["conversation_history"].append(
-            {
-                "question": question.strip(),
-                "answer": answer,
-            }
-        )
+        st.session_state["conversation_history"].append({
+            "question": question.strip(),
+            "answer": answer,
+        })
+        # persist session immediately, then compact if needed
+        save_session_state()
         compact_session_memory(pipeline)
 
         col1, col2 = st.columns([2, 1])
