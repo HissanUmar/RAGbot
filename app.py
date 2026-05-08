@@ -62,8 +62,8 @@ def save_uploaded_documents(uploaded_files, document_dir: Path) -> int:
 
 
 @st.cache_resource(show_spinner=True)
-def load_pipeline() -> RAGPipeline:
-    pipeline = RAGPipeline(enable_remote_llm=False)
+def load_pipeline(enable_remote_llm: bool) -> RAGPipeline:
+    pipeline = RAGPipeline(enable_remote_llm=enable_remote_llm)
     pipeline.setup_pipeline(force_rebuild=False)
     return pipeline
 
@@ -74,6 +74,17 @@ with st.sidebar:
     st.info("No Hugging Face model hosting required.")
     top_k = st.slider("Top K results", min_value=1, max_value=8, value=3)
     rebuild = st.button("Rebuild vector store")
+
+    # LLM enable toggle — default on when HUGGINGFACE_API_KEY exists
+    hf_key = os.getenv("HUGGINGFACE_API_KEY")
+    default_enable_llm = bool(hf_key)
+    enable_llm = st.checkbox(
+        "Enable remote LLM (Hugging Face)",
+        value=default_enable_llm,
+        help="Requires HUGGINGFACE_API_KEY set in environment or Colab Secrets",
+    )
+    if enable_llm and not hf_key:
+        st.warning("HUGGINGFACE_API_KEY not found — set it in Colab Secrets or as an env var.")
 
     st.divider()
     st.subheader("Upload Documents")
@@ -92,7 +103,8 @@ default_doc_path = os.getenv("DOCUMENT_PATH", "./data/documents")
 document_dir = Path(default_doc_path)
 document_count = ensure_demo_documents(document_dir)
 
-pipeline = load_pipeline()
+# Use the sidebar toggle to decide whether to enable the remote LLM
+pipeline = load_pipeline(enable_llm)
 # Update document_dir to the pipeline's configured path (if different)
 document_dir = Path(pipeline.config["document_path"])
 document_count = ensure_demo_documents(document_dir)
