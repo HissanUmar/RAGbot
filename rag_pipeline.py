@@ -192,6 +192,36 @@ class RAGPipeline:
             self.config["llm_max_tokens"],
         )
 
+    def _invoke_text(self, prompt: str) -> Optional[str]:
+        if self.llm is None:
+            return None
+
+        try:
+            response = self.llm.invoke(prompt) if hasattr(self.llm, "invoke") else self.llm(prompt)
+        except Exception:
+            return None
+
+        if response is None:
+            return None
+
+        return response if isinstance(response, str) else str(response)
+
+    def _rewrite_followup_question(self, question: str, conversation_context: str) -> str:
+        if self.llm is None or not conversation_context.strip():
+            return question
+
+        prompt = (
+            "Rewrite the user's follow-up question into a standalone search query. "
+            "Use the conversation memory to resolve pronouns, references, and omissions, but do not answer the question. "
+            "Return only the rewritten search query.\n\n"
+            f"Conversation memory:\n{conversation_context}\n\n"
+            f"Current question: {question}\n\n"
+            "Standalone search query:"
+        )
+        rewritten = self._invoke_text(prompt)
+        rewritten = rewritten.strip() if rewritten else ""
+        return rewritten or question
+
     @staticmethod
     def _split_provider(repo_id: str) -> Tuple[str, Optional[str]]:
         if ":" in repo_id:
@@ -286,16 +316,19 @@ class RAGPipeline:
         self.qa_chain = self._answer_with_retrieval
         return self.qa_chain
 
-    def _answer_with_retrieval(self, question: str) -> Tuple[str, List[Document]]:
+    def _answer_with_retrieval(self, question: str, conversation_context: str = "") -> Tuple[str, List[Document]]:
         if self.vector_store is None:
             raise ValueError("Vector store not initialized. Call build_vector_store() first.")
 
-        sources = self.vector_store.similarity_search(question, k=self.config["retrieval_k"])
+        search_query = self._rewrite_followup_question(question, conversation_context)
+        sources = self.vector_store.similarity_search(search_query, k=self.config["retrieval_k"])
         context = "\n\n".join(doc.page_content for doc in sources)
 
         if self.llm is not None:
             prompt = (
-                "Use the following context to answer the question.\n\n"
+                "Use the following context and conversation memory to answer the question. "
+                "Keep continuity with prior turns when the user asks a follow-up.\n\n"
+                f"Conversation memory:\n{conversation_context or 'None'}\n\n"
                 f"Context:\n{context}\n\n"
                 f"Question: {question}\n\nAnswer:"
             )
@@ -305,6 +338,9 @@ class RAGPipeline:
                 answer = f"Error generating LLM answer: {exc}"
         else:
             answer_lines = ["Retrieved context (LLM disabled):"]
+            if conversation_context.strip():
+                answer_lines.append("Conversation memory:")
+                answer_lines.append(conversation_context)
             for index, document in enumerate(sources, 1):
                 snippet = document.page_content[:220].replace("\n", " ")
                 answer_lines.append(f"{index}. {document.metadata.get('filename', 'Unknown')}: {snippet}...")
@@ -312,12 +348,12 @@ class RAGPipeline:
 
         return answer, sources
 
-    def query(self, question: str) -> Tuple[str, List[Document]]:
+    def query(self, question: str, conversation_context: str = "") -> Tuple[str, List[Document]]:
         if self.qa_chain is None:
             self.create_qa_chain()
 
         print(f"\nQuery: {question}")
-        return self.qa_chain(question)
+        return self.qa_chain(question, conversation_context)
 
     def setup_pipeline(self, force_rebuild: bool = False):
         print("\n" + "=" * 50)

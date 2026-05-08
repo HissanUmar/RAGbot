@@ -100,6 +100,93 @@ def model_slug(model_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", model_name).strip("_")
 
 
+SESSION_MEMORY_MAX_TURNS = int(os.getenv("SESSION_MEMORY_MAX_TURNS", 8))
+SESSION_MEMORY_RECENT_TURNS = int(os.getenv("SESSION_MEMORY_RECENT_TURNS", 4))
+SESSION_MEMORY_CHAR_LIMIT = int(os.getenv("SESSION_MEMORY_CHAR_LIMIT", 6000))
+SESSION_MEMORY_SUMMARY_LIMIT = int(os.getenv("SESSION_MEMORY_SUMMARY_LIMIT", 2400))
+
+
+def initialize_session_memory() -> None:
+    st.session_state.setdefault("conversation_history", [])
+    st.session_state.setdefault("conversation_summary", "")
+    st.session_state.setdefault("memory_compactions", 0)
+
+
+def invoke_text(llm, prompt: str) -> str | None:
+    if llm is None:
+        return None
+
+    try:
+        response = llm.invoke(prompt) if hasattr(llm, "invoke") else llm(prompt)
+    except Exception:
+        return None
+
+    if response is None:
+        return None
+
+    return response if isinstance(response, str) else str(response)
+
+
+def format_turns(turns: list[dict]) -> str:
+    lines: list[str] = []
+    for turn in turns:
+        lines.append(f"User: {turn.get('question', '')}")
+        lines.append(f"Assistant: {turn.get('answer', '')}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def build_conversation_context() -> str:
+    summary = st.session_state.get("conversation_summary", "").strip()
+    recent_turns = st.session_state.get("conversation_history", [])[-SESSION_MEMORY_RECENT_TURNS:]
+    parts: list[str] = []
+    if summary:
+        parts.append(f"Session summary:\n{summary}")
+    if recent_turns:
+        parts.append(f"Recent turns:\n{format_turns(recent_turns)}")
+    return "\n\n".join(parts)
+
+
+def compact_session_memory(pipeline: RAGPipeline) -> None:
+    history = st.session_state.get("conversation_history", [])
+    summary = st.session_state.get("conversation_summary", "").strip()
+
+    if not history:
+        return
+
+    estimated_size = len(summary) + sum(len(turn.get("question", "")) + len(turn.get("answer", "")) for turn in history)
+    if len(history) <= SESSION_MEMORY_MAX_TURNS and estimated_size <= SESSION_MEMORY_CHAR_LIMIT:
+        return
+
+    keep_count = min(SESSION_MEMORY_RECENT_TURNS, len(history))
+    old_turns = history[:-keep_count]
+    recent_turns = history[-keep_count:]
+    transcript = format_turns(old_turns)
+
+    summary_prompt = (
+        "Compact this conversation memory for future follow-up questions. "
+        "Preserve goals, constraints, definitions, decisions, unresolved questions, and any user preferences. "
+        f"Keep the result under {SESSION_MEMORY_SUMMARY_LIMIT} characters. Return only the compacted memory.\n\n"
+        f"Existing summary:\n{summary or 'None'}\n\n"
+        f"Conversation to compact:\n{transcript}\n\n"
+        "Compacted memory:"
+    )
+
+    compacted = invoke_text(getattr(pipeline, "llm", None), summary_prompt)
+    if compacted:
+        compacted = compacted.strip()
+    else:
+        compacted_parts = []
+        if summary:
+            compacted_parts.append(summary)
+        compacted_parts.append(transcript)
+        compacted = "\n\n".join(part for part in compacted_parts if part).strip()[-SESSION_MEMORY_SUMMARY_LIMIT:]
+
+    st.session_state["conversation_summary"] = compacted
+    st.session_state["conversation_history"] = list(recent_turns)
+    st.session_state["memory_compactions"] = st.session_state.get("memory_compactions", 0) + 1
+
+
 @st.cache_resource(show_spinner=True)
 def load_pipeline(
     enable_remote_llm: bool,
@@ -245,6 +332,8 @@ default_doc_path = os.getenv("DOCUMENT_PATH", "./data/documents")
 document_dir = Path(default_doc_path)
 document_count = ensure_demo_documents(document_dir)
 
+initialize_session_memory()
+
 # Use the sidebar selections to decide which models to load.
 pipeline = load_pipeline(
     enable_llm,
@@ -270,6 +359,18 @@ st.sidebar.write(f"LLM temperature: `{pipeline.config['llm_temperature']}`")
 if getattr(pipeline, "embedding_init_error", None):
     st.sidebar.error(f"Embedding init error: {pipeline.embedding_init_error}")
 
+st.sidebar.write(f"Session turns: `{len(st.session_state.get('conversation_history', []))}`")
+if st.session_state.get("conversation_summary"):
+    st.sidebar.caption(f"Session memory compacted {st.session_state.get('memory_compactions', 0)} time(s).")
+    with st.sidebar.expander("Current compacted memory", expanded=False):
+        st.write(st.session_state.get("conversation_summary", ""))
+
+if st.sidebar.button("Clear session memory"):
+    st.session_state["conversation_history"] = []
+    st.session_state["conversation_summary"] = ""
+    st.session_state["memory_compactions"] = 0
+    st.rerun()
+
 if enable_llm and pipeline.llm is None and getattr(pipeline, "llm_init_error", None):
     st.warning(f"Remote LLM could not initialize: {pipeline.llm_init_error}")
 
@@ -291,14 +392,31 @@ if rebuild or pipeline.vector_store is None:
     if rebuild:
         st.success("Vector store rebuilt.")
 
-question = st.text_input("Ask a question about your documents")
+if st.session_state.get("conversation_history"):
+    st.subheader("Conversation")
+    for turn in st.session_state.get("conversation_history", []):
+        with st.chat_message("user"):
+            st.write(turn.get("question", ""))
+        with st.chat_message("assistant"):
+            st.write(turn.get("answer", ""))
+
+question = st.text_input("Ask a follow-up question about your documents")
 
 if st.button("Search"):
     if not question.strip():
         st.warning("Enter a question first.")
     else:
         pipeline.config["retrieval_k"] = top_k
-        answer, sources = pipeline.query(question.strip())
+        conversation_context = build_conversation_context()
+        answer, sources = pipeline.query(question.strip(), conversation_context=conversation_context)
+
+        st.session_state["conversation_history"].append(
+            {
+                "question": question.strip(),
+                "answer": answer,
+            }
+        )
+        compact_session_memory(pipeline)
 
         col1, col2 = st.columns([2, 1])
         with col1:
